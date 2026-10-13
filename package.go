@@ -295,6 +295,18 @@ type Part struct {
 
 	// writeOnly identifies lightweight handles returned by PackageWriter.
 	writeOnly bool
+
+	// entryName is the ZIP entry name of a part read from an archive. It is
+	// reused on write so that a round trip does not rename the entry.
+	entryName string
+}
+
+// zipEntryName returns the ZIP entry name under which the part is written.
+func (p *Part) zipEntryName() string {
+	if p.entryName != "" {
+		return p.entryName
+	}
+	return strings.TrimPrefix(p.URI.String(), "/")
 }
 
 // Stream opens a read stream for the part content.
@@ -806,11 +818,11 @@ func (p *Packaging) openPackage(
 			}
 		}
 
-		partURI, _ := url.Parse(partPath)
 		part := &Part{
-			URI:         partURI,
+			URI:         partURIFromEntryName(partPath),
 			ContentType: contentType,
 			pkg:         pkg,
+			entryName:   strings.TrimPrefix(file.Name, "/"),
 		}
 		if lazy {
 			part.archiveFile = file
@@ -1284,7 +1296,7 @@ func (writer *PackageWriter) validateNewPartLocked(
 		return nil, "", "", fmt.Errorf("part URI must be an internal path: %s", uri.String())
 	}
 
-	partPath := normalizePathForURI(uri.Path)
+	partPath := normalizePathForURI(uri.EscapedPath())
 	zipPath := strings.TrimPrefix(partPath, "/")
 	if partPath == "/" || strings.HasSuffix(uri.Path, "/") {
 		return nil, "", "", fmt.Errorf("part URI must identify a file: %s", uri.String())
@@ -1461,7 +1473,11 @@ func (writer *PackageWriter) writeMetadataLocked() error {
 				TargetMode: rel.targetMode,
 			})
 		}
-		entryPath := strings.TrimPrefix(getRelsPath(sourcePath), "/")
+		relsSource := sourcePath
+		if source, ok := writer.parts[sourcePath]; ok {
+			relsSource = source.uri
+		}
+		entryPath := strings.TrimPrefix(getRelsPath(relsSource), "/")
 		if err := writer.writeXMLEntryLocked(entryPath, rels); err != nil {
 			return fmt.Errorf("failed to write relationships %s: %w", entryPath, err)
 		}
@@ -1530,6 +1546,9 @@ func (p *PackageReadWrite) PutPart(
 		ContentType: contentType,
 		content:     contentCopy,
 		pkg:         base,
+	}
+	if existing, ok := base.parts[normalizedURI]; ok {
+		part.entryName = existing.entryName
 	}
 
 	base.parts[normalizedURI] = part
@@ -1875,7 +1894,11 @@ func (p *PackageReadWrite) writeToZip(w io.Writer) error {
 			continue
 		}
 
-		relsPath := getRelsPath(sourcePath)
+		relsSource := sourcePath
+		if source, ok := p.base.parts[sourcePath]; ok {
+			relsSource = "/" + source.zipEntryName()
+		}
+		relsPath := getRelsPath(relsSource)
 		if relsWritten[relsPath] {
 			continue
 		}
@@ -1910,7 +1933,7 @@ func (p *PackageReadWrite) writeToZip(w io.Writer) error {
 
 	// Write all parts
 	for _, part := range p.base.parts {
-		partPath := strings.TrimPrefix(part.URI.String(), "/")
+		partPath := part.zipEntryName()
 		partWriter, err := zw.Create(partPath)
 		if err != nil {
 			return fmt.Errorf("failed to create part entry %s: %w", partPath, err)
@@ -2067,21 +2090,83 @@ func normalizeURI(uri *url.URL) string {
 	if uri == nil {
 		return ""
 	}
-	path := uri.Path
+	path := uri.EscapedPath()
 	if uri.String() != "" && !strings.HasPrefix(uri.String(), "/") {
 		path = "/" + uri.String()
 	}
 	return normalizePathForMap(path)
 }
 
-// normalizePathForMap normalizes a path for use as a map key
+// normalizePathForMap normalizes a path for use as a map key.
+//
+// Part names are compared as case-insensitive ASCII strings and independent
+// of their percent-encoding (ISO/IEC 29500-2), so "/a b.pdf", "/a%20b.pdf"
+// and "/A%20B.pdf" all map to the same key while "/%C3%84" and "/%C3%A4" do
+// not.
 func normalizePathForMap(path string) string {
-	path = normalizePathForURI(path)
-	if path == "" {
-		return ""
+	segments := strings.Split(strings.ReplaceAll(path, "\\", "/"), "/")
+	for i, segment := range segments {
+		segments[i] = canonicalizePathSegment(segment)
+	}
+	return normalizePathForURI(strings.Join(segments, "/"))
+}
+
+// canonicalizePathSegment decodes a path segment, lowercases its ASCII letters
+// and encodes it again. Malformed percent-encodings are kept literally.
+func canonicalizePathSegment(segment string) string {
+	if decoded, err := url.PathUnescape(segment); err == nil {
+		segment = decoded
 	}
 
-	return strings.ToLower(path)
+	var builder strings.Builder
+	for i := 0; i < len(segment); i++ {
+		c := segment[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if isPathSegmentCharacter(c) {
+			builder.WriteByte(c)
+		} else {
+			fmt.Fprintf(&builder, "%%%02x", c)
+		}
+	}
+	return builder.String()
+}
+
+// isPathSegmentCharacter reports whether c may appear unencoded in a path
+// segment (RFC 3986 pchar without percent-encodings).
+func isPathSegmentCharacter(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		return true
+	}
+	return strings.IndexByte("-._~!$&'()*+,;=:@", c) >= 0
+}
+
+// partURIFromEntryName builds the URI of a part read from the given ZIP entry.
+// Entry names written by non-conforming producers may contain characters that
+// url.Parse would otherwise treat as delimiters or escapes.
+func partURIFromEntryName(partPath string) *url.URL {
+	var builder strings.Builder
+	for i := 0; i < len(partPath); i++ {
+		c := partPath[i]
+		isEscape := c == '%' && i+2 < len(partPath) &&
+			isHexDigit(partPath[i+1]) && isHexDigit(partPath[i+2])
+		if c == '?' || c == '#' || (c == '%' && !isEscape) {
+			fmt.Fprintf(&builder, "%%%02X", c)
+		} else {
+			builder.WriteByte(c)
+		}
+	}
+
+	if partURI, err := url.Parse(builder.String()); err == nil {
+		return partURI
+	}
+	return &url.URL{Path: partPath}
+}
+
+func isHexDigit(c byte) bool {
+	return ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
 }
 
 // normalizePathForURI normalizes an OPC URI-like path while preserving case.

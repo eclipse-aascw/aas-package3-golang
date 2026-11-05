@@ -27,13 +27,14 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
 SPDX-License-Identifier = "MIT"
 
-# Test resources with the expected outputs of reading sample AASX packages
-# (the environment as XML and the tables of specs, supplementaries and
-# thumbnails). They are compared as-is, so they do not carry a header.
+# The test resources are verbatim copies of the test resources in
+# aas-package3-csharp (src/AasCore.Aas3.Package.Tests/TestResources/), with the
+# expected outputs of reading sample AASX packages. They are kept unchanged, so
+# they do not carry a header.
 [[annotations]]
 path = "TestResources/**"
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
+SPDX-FileCopyrightText = "2023 aas-package3-csharp AUTHORS"
 SPDX-License-Identifier = "MIT"
 
 # The checksum file is maintained by the Go tooling and can not carry a comment.

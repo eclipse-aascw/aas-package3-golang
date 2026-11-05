@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 aas-package3-golang AUTHORS
+#
+# SPDX-License-Identifier: MIT
+
+version = 1
+
+# Prose and metadata where a header would end up in the rendered output
+# (e.g., README shown on GitHub and pkg.go.dev, and the documentation in doc/)
+# or which can not carry a comment (JSON).
+[[annotations]]
+path = [
+    "AUTHORS",
+    "README.md",
+    "CONTRIBUTING.md",
+    "doc/**",
+    ".github/markdown-link-check-config.json",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
+SPDX-License-Identifier = "MIT"
+
+# The fuzz corpus is read by the Go tooling, which expects
+# "go test fuzz v1" on the first line, so it can not carry a comment.
+[[annotations]]
+path = "testdata/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
+SPDX-License-Identifier = "MIT"
+
+# Test resources with the expected outputs of reading sample AASX packages
+# (the environment as XML and the tables of specs, supplementaries and
+# thumbnails). They are compared as-is, so they do not carry a header.
+[[annotations]]
+path = "TestResources/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
+SPDX-License-Identifier = "MIT"
+
+# The checksum file is maintained by the Go tooling and can not carry a comment.
+[[annotations]]
+path = "go.sum"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 aas-package3-golang AUTHORS"
+SPDX-License-Identifier = "MIT"

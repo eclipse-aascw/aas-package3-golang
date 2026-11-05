@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-golang AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 //go:build debug
 // +build debug
 

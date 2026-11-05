@@ -27,27 +27,6 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out -o coverage.html
 ```
 
-## Test Resources
-
-Test resources are stored in the `TestResources/` directory at the root of the repository.
-
-The test resources include sample AASX packages from various vendors for testing read functionality:
-
-```
-TestResources/
-└── TestPackageRead/
-    ├── 01_Festo/
-    ├── 02_Bosch/
-    ├── 03_Bosch/
-    └── ...
-```
-
-Each test resource directory contains:
-- The AASX file (as XML)
-- `specsTable.txt` - Expected specs information
-- `supplementariesTable.txt` - Expected supplementary relationships
-- `thumbnail.txt` - Expected thumbnail information
-
 ## Writing Tests
 
 ### Test File Organization

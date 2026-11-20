@@ -51,7 +51,15 @@ var (
 	ErrPackageClosed       = errors.New("package is closed")
 	ErrWriterClosed        = errors.New("package writer is closed")
 	ErrWriteOnlyPart       = errors.New("part belongs to a write-only package")
+	// ErrStreamNotTruncatable is returned when flushing a package which is smaller
+	// than the current content of a stream that cannot be truncated.
+	ErrStreamNotTruncatable = errors.New("stream can not be truncated")
 )
+
+// truncater is implemented by streams such as *os.File which can be shrunk.
+type truncater interface {
+	Truncate(size int64) error
+}
 
 // region OPC XML Types
 
@@ -1858,11 +1866,48 @@ func (p *PackageReadWrite) Flush() error {
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 	} else if base.stream != nil {
-		if _, err := base.stream.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek stream: %w", err)
+		if err := overwriteStream(base.stream, buf.Bytes()); err != nil {
+			return err
 		}
-		if _, err := base.stream.Write(buf.Bytes()); err != nil {
-			return fmt.Errorf("failed to write stream: %w", err)
+	}
+
+	return nil
+}
+
+// overwriteStream replaces the whole content of the stream with data.
+//
+// If data is shorter than the current content, the stream is truncated so that
+// no stale bytes of the previous package remain at the end. If the stream can
+// not be truncated, ErrStreamNotTruncatable is returned before anything is
+// written so that the previous content stays intact.
+func overwriteStream(stream io.ReadWriteSeeker, data []byte) error {
+	oldSize, err := stream.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("failed to seek stream: %w", err)
+	}
+
+	newSize := int64(len(data))
+	var shrinker truncater
+	if newSize < oldSize {
+		var ok bool
+		shrinker, ok = stream.(truncater)
+		if !ok {
+			return fmt.Errorf(
+				"%w: the package of %d bytes is smaller than the %d bytes "+
+					"already in the stream; the stream must implement Truncate(int64) error",
+				ErrStreamNotTruncatable, newSize, oldSize)
+		}
+	}
+
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek stream: %w", err)
+	}
+	if _, err := stream.Write(data); err != nil {
+		return fmt.Errorf("failed to write stream: %w", err)
+	}
+	if shrinker != nil {
+		if err := shrinker.Truncate(newSize); err != nil {
+			return fmt.Errorf("failed to truncate stream: %w", err)
 		}
 	}
 

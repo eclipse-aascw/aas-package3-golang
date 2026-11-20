@@ -246,6 +246,11 @@ if err != nil {
 
 This writes all pending changes to the file or stream.
 
+When flushing to a stream, the stream is overwritten from the start.
+If the package became smaller (for example, because you deleted a part), the stream needs to be truncated.
+This works out-of-the-box with `*os.File`; any other stream needs to implement `Truncate(size int64) error`.
+Otherwise, `Flush` returns `ErrStreamNotTruncatable` and leaves the stream untouched.
+
 ## Concurrency
 
 Please be careful if you read parts while you are writing.

@@ -40,6 +40,7 @@ The package defines the following OPC relationship types used in AASX packages:
 | `ErrPackageClosed` | Returned when reading a part after package closure |
 | `ErrWriterClosed` | Returned when operating on a closed `PackageWriter` |
 | `ErrWriteOnlyPart` | Returned when reading a `PackageWriter` part handle |
+| `ErrStreamNotTruncatable` | Returned by `Flush` when the package shrank but the stream has no `Truncate(int64) error` method |
 
 ## Types
 
@@ -60,6 +61,11 @@ func (p *Packaging) OpenReadFromReaderAt(reader io.ReaderAt, size int64, options
 func (p *Packaging) OpenReadWrite(path string) (*PackageReadWrite, error)
 func (p *Packaging) OpenReadWriteFromStream(stream io.ReadWriteSeeker) (*PackageReadWrite, error)
 ```
+
+`Flush` on a package created or opened from a stream overwrites the stream from the start.
+If the new package is smaller than the stream, the stream is truncated, which requires a
+`Truncate(int64) error` method (as `*os.File` provides). Otherwise `Flush` returns
+`ErrStreamNotTruncatable` and leaves the stream untouched.
 
 ### Reader Options
 

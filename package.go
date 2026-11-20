@@ -407,6 +407,8 @@ func (p *Packaging) Create(path string) (*PackageReadWrite, error) {
 
 	pkg := newPackageBase(path, nil)
 	pkg.readWrite = true
+	// The freshly created file is empty and thus not a valid package yet.
+	pkg.modified = true
 
 	// Create the origin part
 	originURI, _ := url.Parse("/aasx/aasx-origin")
@@ -451,6 +453,8 @@ func (p *Packaging) Create(path string) (*PackageReadWrite, error) {
 func (p *Packaging) CreateInStream(stream io.ReadWriteSeeker) (*PackageReadWrite, error) {
 	pkg := newPackageBase("", stream)
 	pkg.readWrite = true
+	// The stream does not contain a valid package yet.
+	pkg.modified = true
 
 	// Create the origin part
 	originURI, _ := url.Parse("/aasx/aasx-origin")
@@ -856,6 +860,7 @@ type packageBase struct {
 	relationships map[string][]relationship // source path -> relationships
 	originURI     string                    // normalized path to origin part
 	readWrite     bool
+	modified      bool // unflushed changes exist; only meaningful when readWrite
 	nextRelID     int
 	readerOptions readerOptions
 	ownedCloser   io.Closer
@@ -877,6 +882,10 @@ func newPackageBase(path string, stream io.ReadWriteSeeker) *packageBase {
 func (pkg *packageBase) close() error {
 	pkg.mu.Lock()
 	defer pkg.mu.Unlock()
+	return pkg.closeLocked()
+}
+
+func (pkg *packageBase) closeLocked() error {
 	if pkg.closed {
 		return pkg.closeErr
 	}
@@ -911,7 +920,9 @@ func (pkg *packageBase) addRelationshipWithIDAndMode(
 	return id
 }
 
-func (pkg *packageBase) removeRelationship(sourcePath, targetPath, relType string) {
+// removeRelationship removes the matching relationships and reports whether
+// any relationship has been removed.
+func (pkg *packageBase) removeRelationship(sourcePath, targetPath, relType string) bool {
 	normalizedSource := normalizePathForMap(sourcePath)
 	normalizedTarget := normalizePathForMap(targetPath)
 
@@ -924,6 +935,7 @@ func (pkg *packageBase) removeRelationship(sourcePath, targetPath, relType strin
 		}
 	}
 	pkg.relationships[normalizedSource] = newRels
+	return len(newRels) != len(rels)
 }
 
 func (pkg *packageBase) getRelationshipsByType(sourcePath, relType string) []relationship {
@@ -1556,6 +1568,7 @@ func (p *PackageReadWrite) PutPart(
 	}
 
 	base.parts[normalizedURI] = part
+	base.modified = true
 
 	stored := base.parts[normalizedURI]
 	Ensure(stored != nil, "The part should be included in the package.")
@@ -1596,7 +1609,10 @@ func (p *PackageReadWrite) DeletePart(part *Part) error {
 	defer base.mu.Unlock()
 
 	normalizedURI := normalizeURI(part.URI)
-	delete(base.parts, normalizedURI)
+	if _, exists := base.parts[normalizedURI]; exists {
+		delete(base.parts, normalizedURI)
+		base.modified = true
+	}
 
 	_, exists := base.parts[normalizedURI]
 	Ensure(!exists, "The part should not exist in the package anymore.")
@@ -1618,6 +1634,7 @@ func (p *PackageReadWrite) MakeSpec(part *Part) error {
 	}
 
 	base.addRelationship(base.originURI, part.URI.String(), RelationTypeAasxSpec)
+	base.modified = true
 
 	listed := base.hasRelationship(base.originURI, part.URI.String(), RelationTypeAasxSpec)
 	if listed {
@@ -1653,7 +1670,9 @@ func (p *PackageReadWrite) UnmakeSpec(part *Part) error {
 		}
 	}
 
-	base.removeRelationship(base.originURI, part.URI.String(), RelationTypeAasxSpec)
+	if base.removeRelationship(base.originURI, part.URI.String(), RelationTypeAasxSpec) {
+		base.modified = true
+	}
 
 	newSpecURISet := make(map[string]struct{})
 	for _, rel := range base.getRelationshipsByType(
@@ -1713,6 +1732,7 @@ func (p *PackageReadWrite) RelateSupplementaryToSpec(
 		spec.URI.String(),
 		supplementary.URI.String(),
 		RelationTypeAasxSupplementary)
+	base.modified = true
 
 	relExists := base.hasRelationship(
 		spec.URI.String(),
@@ -1748,10 +1768,12 @@ func (p *PackageReadWrite) UnrelateSupplementaryFromSpec(supplementary *Part, sp
 		}
 	}
 
-	base.removeRelationship(
+	if base.removeRelationship(
 		spec.URI.String(),
 		supplementary.URI.String(),
-		RelationTypeAasxSupplementary)
+		RelationTypeAasxSupplementary) {
+		base.modified = true
+	}
 
 	newSupplURISet := make(map[string]struct{})
 	for _, rel := range base.getRelationshipsByType(
@@ -1804,6 +1826,7 @@ func (p *PackageReadWrite) SetThumbnail(part *Part) error {
 
 	// Add new thumbnail relationship
 	base.addRelationship("", part.URI.String(), RelationTypeThumbnail)
+	base.modified = true
 
 	thumbnailRels := base.getRelationshipsByType("", RelationTypeThumbnail)
 	Ensure(len(thumbnailRels) > 0, "The thumbnail must be available.")
@@ -1830,7 +1853,9 @@ func (p *PackageReadWrite) UnsetThumbnail() error {
 
 	rels := base.getRelationshipsByType("", RelationTypeThumbnail)
 	for _, rel := range rels {
-		base.removeRelationship("", rel.target, RelationTypeThumbnail)
+		if base.removeRelationship("", rel.target, RelationTypeThumbnail) {
+			base.modified = true
+		}
 	}
 
 	remaining := base.getRelationshipsByType("", RelationTypeThumbnail)
@@ -1838,7 +1863,10 @@ func (p *PackageReadWrite) UnsetThumbnail() error {
 	return nil
 }
 
-// Flush writes all pending changes to the underlying stream or file.
+// Flush writes the package to the underlying stream or file.
+//
+// Flush always writes, even if there are no unflushed changes. Use it to save
+// in the middle of a session; Close flushes automatically.
 func (p *PackageReadWrite) Flush() error {
 	base, err := p.lockBaseForWrite()
 	if err != nil {
@@ -1846,6 +1874,55 @@ func (p *PackageReadWrite) Flush() error {
 	}
 	defer base.mu.Unlock()
 
+	return p.flushLocked(base)
+}
+
+// Close flushes the package if it has been modified since it was opened or
+// last flushed, and then closes it.
+//
+// If nothing has been modified, the underlying file or stream is left as-is.
+// If the flush fails, the package stays open and the error is returned, so that
+// you can retry, or call Discard to close without saving.
+//
+// To avoid persisting a half-modified package when an operation fails or panics,
+// defer Discard and call Close explicitly at the end, analogous to
+// sql.Tx.Rollback and sql.Tx.Commit:
+//
+//	pkg, err := packaging.OpenReadWrite(path)
+//	if err != nil {
+//		return err
+//	}
+//	defer pkg.Discard()
+//	// ... modify pkg, returning early on errors ...
+//	return pkg.Close()
+func (p *PackageReadWrite) Close() error {
+	if p == nil || p.base == nil {
+		return nil
+	}
+	base := p.base
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if !base.closed && base.modified {
+		if err := p.flushLocked(base); err != nil {
+			return err
+		}
+	}
+	return base.closeLocked()
+}
+
+// Discard closes the package without flushing, dropping all changes made
+// since it was opened or last flushed.
+//
+// Discard is a no-op if the package has already been closed, so it is safe to
+// defer Discard and call Close at the end of the happy path.
+func (p *PackageReadWrite) Discard() error {
+	if p == nil || p.base == nil {
+		return nil
+	}
+	return p.base.close()
+}
+
+func (p *PackageReadWrite) flushLocked(base *packageBase) error {
 	// Create the zip content in memory
 	var buf bytes.Buffer
 	if err := p.writeToZip(&buf); err != nil {
@@ -1866,6 +1943,7 @@ func (p *PackageReadWrite) Flush() error {
 		}
 	}
 
+	base.modified = false
 	return nil
 }
 

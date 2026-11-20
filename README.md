@@ -43,7 +43,8 @@ pkg, err := packaging.Create("/path/to/some/file.aasx")
 if err != nil {
     log.Fatal(err)
 }
-defer pkg.Close()
+// Discard is a no-op after Close, so it only drops changes on early exits.
+defer pkg.Discard()
 
 specURI, _ := url.Parse("/aasx/some-company/data.json")
 spec, _ := pkg.PutPart(specURI, "text/json", specContent)
@@ -57,7 +58,10 @@ supplURI, _ := url.Parse("/aasx-suppl/some-company/some-manual.pdf")
 suppl, _ := pkg.PutPart(supplURI, "application/pdf", supplementaryContent)
 pkg.RelateSupplementaryToSpec(suppl, spec)
 
-pkg.Flush()
+// Close flushes the changes and closes the package.
+if err := pkg.Close(); err != nil {
+    log.Fatal(err)
+}
 ```
 
 To read from the package:
@@ -165,7 +169,9 @@ Inherits all `PackageRead` methods, plus:
 | `UnrelateSupplementaryFromSpec(supplementary, spec)` | Remove supplementary relationship |
 | `SetThumbnail(part)` | Set the package thumbnail |
 | `UnsetThumbnail()` | Remove the package thumbnail |
-| `Flush()` | Write pending changes |
+| `Flush()` | Write the package now, e.g., in the middle of a session |
+| `Close()` | Flush if modified, then close the package |
+| `Discard()` | Close without flushing, dropping unflushed changes |
 
 ### Bounded-memory I/O
 

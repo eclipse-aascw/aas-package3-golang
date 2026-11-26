@@ -287,6 +287,8 @@ func addSpec(packaging *aasx.Packaging, path string, content []byte) error {
 
 If the flush in `Close` fails, the package remains open and the error is returned, so that you can retry or `Discard`.
 
+Up to v2.1.0, `Close` did not flush. If you are upgrading code that defers `Close`, please see [Migrating from v2.1.0 and Earlier](installation.md#migrating-from-v210-and-earlier).
+
 To flush without closing:
 
 ```go

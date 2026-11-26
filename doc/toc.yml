@@ -9,3 +9,6 @@
 - name: Contributing
   href: contributing/
   homepage: contributing/intro.md
+
+- name: Change Log
+  href: changelog.md

@@ -298,6 +298,34 @@ if err != nil {
 }
 ```
 
+When flushing to a stream, the stream is overwritten from the start.
+If the package became smaller (for example, because you deleted a part), the stream needs to be truncated.
+This works out-of-the-box with `*os.File`; any other stream needs to implement `Truncate(size int64) error`.
+Otherwise, `Flush` returns `ErrStreamNotTruncatable` and leaves the stream untouched.
+The same holds for `Close`, which flushes a modified package: it returns `ErrStreamNotTruncatable`, and the package stays open so that you can `Discard` it.
+
+Truncation is thus an optional capability of the stream, checked at run time only when it is needed.
+The standard library handles optional capabilities in the same way.
+For example, `database/sql` returns an error from `BeginTx` with a non-default isolation level if the driver does not implement `driver.ConnBeginTx`, and `http.ResponseController` returns an error matching `http.ErrNotSupported` if the `http.ResponseWriter` does not implement `http.Flusher`.
+
+If you prefer type safety, use `CreateInTruncatableStream` and `OpenReadWriteFromTruncatableStream` instead.
+They require a `ReadWriteSeekTruncater`, so the compiler checks that the stream can be truncated and `ErrStreamNotTruncatable` can not occur:
+
+```go
+file, err := os.OpenFile("/path/to/some/file.aasx", os.O_RDWR, 0)
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+// *os.File implements ReadWriteSeekTruncater.
+pkg, err := packaging.OpenReadWriteFromTruncatableStream(file)
+if err != nil {
+    log.Fatal(err)
+}
+defer pkg.Discard()
+```
+
 ## Concurrency
 
 Please be careful if you read parts while you are writing.

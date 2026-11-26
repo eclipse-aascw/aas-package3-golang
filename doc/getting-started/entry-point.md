@@ -17,13 +17,15 @@ The `Packaging` instance provides the following methods:
 | Method | Description |
 |--------|-------------|
 | `Create(path)` | Create a new AASX package at the given file path |
-| `CreateInStream(stream)` | Create a new AASX package in a stream |
+| `CreateInStream(stream)` | Create a new AASX package in a stream; if the stream lacks `Truncate`, shrinking the package fails with `ErrStreamNotTruncatable` |
+| `CreateInTruncatableStream(stream)` | Same, but the stream must implement `Truncate` (type-safe) |
 | `CreateWriter(writer)` | Create a bounded-memory, append-only package on an `io.Writer` |
 | `OpenRead(path, options...)` | Lazily open an existing AASX package for reading |
 | `OpenReadFromStream(stream, options...)` | Lazily open from an `io.ReadSeeker` |
 | `OpenReadFromReaderAt(reader, size, options...)` | Lazily open from an `io.ReaderAt` |
 | `OpenReadWrite(path)` | Open an existing AASX package for read/write |
-| `OpenReadWriteFromStream(stream)` | Open an AASX package from a stream for read/write |
+| `OpenReadWriteFromStream(stream)` | Open an AASX package from a stream for read/write; if the stream lacks `Truncate`, shrinking the package fails with `ErrStreamNotTruncatable` |
+| `OpenReadWriteFromTruncatableStream(stream)` | Same, but the stream must implement `Truncate` (type-safe) |
 
 ### Example
 

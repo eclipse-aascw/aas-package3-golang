@@ -51,7 +51,41 @@ var (
 	ErrPackageClosed       = errors.New("package is closed")
 	ErrWriterClosed        = errors.New("package writer is closed")
 	ErrWriteOnlyPart       = errors.New("part belongs to a write-only package")
+	// ErrStreamNotTruncatable is returned when flushing a package which is smaller
+	// than the current content of a stream that cannot be truncated. Nothing is
+	// written, so the previous package stays intact. Close returns this error
+	// as well, since it flushes a modified package; the package is then left
+	// open so that you can Discard it.
+	//
+	// Truncation is an optional capability of the stream, checked at run time
+	// only when the package shrank, similar to how the standard library handles
+	// optional capabilities: database/sql returns an error from BeginTx with a
+	// non-default isolation level if the driver does not implement
+	// driver.ConnBeginTx, and http.ResponseController returns an error matching
+	// http.ErrNotSupported if the http.ResponseWriter does not implement
+	// http.Flusher.
+	//
+	// If you prefer type safety, use CreateInTruncatableStream and
+	// OpenReadWriteFromTruncatableStream, which require a ReadWriteSeekTruncater
+	// so that this error can not occur.
+	ErrStreamNotTruncatable = errors.New("stream can not be truncated")
 )
+
+// truncater is implemented by streams such as *os.File which can be shrunk.
+type truncater interface {
+	Truncate(size int64) error
+}
+
+// ReadWriteSeekTruncater is a stream which can also be truncated, such as
+// *os.File.
+//
+// Packages created or opened from such a stream can always shrink on flush.
+type ReadWriteSeekTruncater interface {
+	io.ReadWriteSeeker
+	Truncate(size int64) error
+}
+
+var _ ReadWriteSeekTruncater = (*os.File)(nil)
 
 // region OPC XML Types
 
@@ -450,6 +484,12 @@ func (p *Packaging) Create(path string) (*PackageReadWrite, error) {
 
 // CreateInStream creates a new AAS package in the given stream.
 // Returns a PackageReadWrite instance for writing to the package.
+//
+// If the stream also implements Truncate(int64) error, as *os.File does, the
+// package can shrink on flush. Otherwise, see ErrStreamNotTruncatable.
+//
+// If you prefer the compiler to check that the stream can be truncated, use
+// CreateInTruncatableStream instead.
 func (p *Packaging) CreateInStream(stream io.ReadWriteSeeker) (*PackageReadWrite, error) {
 	pkg := newPackageBase("", stream)
 	pkg.readWrite = true
@@ -492,6 +532,16 @@ func (p *Packaging) CreateInStream(stream io.ReadWriteSeeker) (*PackageReadWrite
 	Ensure(thumbnail == nil, "There must be no thumbnail in a new package.")
 
 	return result, nil
+}
+
+// CreateInTruncatableStream creates a new AAS package in the given stream.
+//
+// It is the type-safe variant of CreateInStream: since the stream can be
+// truncated, flushing never returns ErrStreamNotTruncatable.
+func (p *Packaging) CreateInTruncatableStream(
+	stream ReadWriteSeekTruncater,
+) (*PackageReadWrite, error) {
+	return p.CreateInStream(stream)
 }
 
 // OpenRead opens an AAS package at the given path for lazy reading.
@@ -609,6 +659,12 @@ func (p *Packaging) OpenReadWrite(path string) (*PackageReadWrite, error) {
 
 // OpenReadWriteFromStream opens an AAS package from the given stream for read/write.
 // Returns a PackageReadWrite instance or an error.
+//
+// If the stream also implements Truncate(int64) error, as *os.File does, the
+// package can shrink on flush. Otherwise, see ErrStreamNotTruncatable.
+//
+// If you prefer the compiler to check that the stream can be truncated, use
+// OpenReadWriteFromTruncatableStream instead.
 func (p *Packaging) OpenReadWriteFromStream(
 	stream io.ReadWriteSeeker,
 ) (*PackageReadWrite, error) {
@@ -647,6 +703,17 @@ func (p *Packaging) OpenReadWriteFromStream(
 		"The Path property of the package must be empty if read/writing to a stream.")
 
 	return result, nil
+}
+
+// OpenReadWriteFromTruncatableStream opens an AAS package from the given stream
+// for read/write.
+//
+// It is the type-safe variant of OpenReadWriteFromStream: since the stream can
+// be truncated, flushing never returns ErrStreamNotTruncatable.
+func (p *Packaging) OpenReadWriteFromTruncatableStream(
+	stream ReadWriteSeekTruncater,
+) (*PackageReadWrite, error) {
+	return p.OpenReadWriteFromStream(stream)
 }
 
 // openFromReader materializes an OPC package for the mutable compatibility API.
@@ -1935,15 +2002,52 @@ func (p *PackageReadWrite) flushLocked(base *packageBase) error {
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 	} else if base.stream != nil {
-		if _, err := base.stream.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek stream: %w", err)
-		}
-		if _, err := base.stream.Write(buf.Bytes()); err != nil {
-			return fmt.Errorf("failed to write stream: %w", err)
+		if err := overwriteStream(base.stream, buf.Bytes()); err != nil {
+			return err
 		}
 	}
 
 	base.modified = false
+	return nil
+}
+
+// overwriteStream replaces the whole content of the stream with data.
+//
+// If data is shorter than the current content, the stream is truncated so that
+// no stale bytes of the previous package remain at the end. If the stream can
+// not be truncated, ErrStreamNotTruncatable is returned before anything is
+// written so that the previous content stays intact.
+func overwriteStream(stream io.ReadWriteSeeker, data []byte) error {
+	oldSize, err := stream.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("failed to seek stream: %w", err)
+	}
+
+	newSize := int64(len(data))
+	var shrinker truncater
+	if newSize < oldSize {
+		var ok bool
+		shrinker, ok = stream.(truncater)
+		if !ok {
+			return fmt.Errorf(
+				"%w: the package of %d bytes is smaller than the %d bytes "+
+					"already in the stream; the stream must implement Truncate(int64) error",
+				ErrStreamNotTruncatable, newSize, oldSize)
+		}
+	}
+
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek stream: %w", err)
+	}
+	if _, err := stream.Write(data); err != nil {
+		return fmt.Errorf("failed to write stream: %w", err)
+	}
+	if shrinker != nil {
+		if err := shrinker.Truncate(newSize); err != nil {
+			return fmt.Errorf("failed to truncate stream: %w", err)
+		}
+	}
+
 	return nil
 }
 

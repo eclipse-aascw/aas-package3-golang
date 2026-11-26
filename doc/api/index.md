@@ -40,6 +40,7 @@ The package defines the following OPC relationship types used in AASX packages:
 | `ErrPackageClosed` | Returned when reading a part after package closure |
 | `ErrWriterClosed` | Returned when operating on a closed `PackageWriter` |
 | `ErrWriteOnlyPart` | Returned when reading a `PackageWriter` part handle |
+| `ErrStreamNotTruncatable` | Returned by `Flush` and `Close` when the package shrank but the stream has no `Truncate(int64) error` method |
 
 ## Types
 
@@ -53,12 +54,39 @@ type Packaging struct{}
 func NewPackaging() *Packaging
 func (p *Packaging) Create(path string) (*PackageReadWrite, error)
 func (p *Packaging) CreateInStream(stream io.ReadWriteSeeker) (*PackageReadWrite, error)
+func (p *Packaging) CreateInTruncatableStream(stream ReadWriteSeekTruncater) (*PackageReadWrite, error)
 func (p *Packaging) CreateWriter(writer io.Writer) (*PackageWriter, error)
 func (p *Packaging) OpenRead(path string, options ...ReaderOption) (*PackageRead, error)
 func (p *Packaging) OpenReadFromStream(stream io.ReadSeeker, options ...ReaderOption) (*PackageRead, error)
 func (p *Packaging) OpenReadFromReaderAt(reader io.ReaderAt, size int64, options ...ReaderOption) (*PackageRead, error)
 func (p *Packaging) OpenReadWrite(path string) (*PackageReadWrite, error)
 func (p *Packaging) OpenReadWriteFromStream(stream io.ReadWriteSeeker) (*PackageReadWrite, error)
+func (p *Packaging) OpenReadWriteFromTruncatableStream(stream ReadWriteSeekTruncater) (*PackageReadWrite, error)
+```
+
+`Flush` on a package created or opened from a stream overwrites the stream from the start.
+If the new package is smaller than the stream, the stream is truncated, which requires a
+`Truncate(int64) error` method (as `*os.File` provides). Otherwise `Flush` returns
+`ErrStreamNotTruncatable` and leaves the stream untouched. `Close` flushes a modified
+package, so it returns the same error; the package then stays open and can be discarded.
+
+Truncation is an optional capability of the stream, checked at run time only when the
+package shrank. This follows how the standard library handles optional capabilities, e.g.,
+`database/sql` returns an error from `BeginTx` with a non-default isolation level if the
+driver does not implement `driver.ConnBeginTx`, and `http.ResponseController` returns an
+error matching `http.ErrNotSupported` if the `http.ResponseWriter` does not implement
+`http.Flusher`.
+
+If you prefer type safety, use `CreateInTruncatableStream` and
+`OpenReadWriteFromTruncatableStream`. They require a `ReadWriteSeekTruncater`, i.e., an
+`io.ReadWriteSeeker` with a `Truncate(size int64) error` method, so the compiler checks the
+capability and `ErrStreamNotTruncatable` can not occur:
+
+```go
+type ReadWriteSeekTruncater interface {
+    io.ReadWriteSeeker
+    Truncate(size int64) error
+}
 ```
 
 ### Reader Options

@@ -18,3 +18,5 @@ The documentation is split in three sections:
 * [API Documentation](api/index.md) provides an overview of the package API, types, and functions.
 
 * [Contributing](contributing/intro.md) explains how to set up the development environment, run tests, and submit your contribution.
+
+The changes in each release are listed in the [change log](changelog.md).

@@ -15,7 +15,7 @@ The version X.Y.Z indicates:
 
 Releases are created using Git tags:
 
-1. **Update version** (if needed in any documentation)
+1. **Update the [change log](../changelog.md)** and the version in the documentation, if needed
 
 2. **Create a tag**:
    ```bash
@@ -54,6 +54,6 @@ Before creating a release:
 
 1. ✅ All tests pass
 2. ✅ Documentation is up to date
-3. ✅ CHANGELOG (if maintained) is updated
+3. ✅ [Change log](../changelog.md) is updated
 4. ✅ Version number follows semantic versioning
 5. ✅ No breaking changes in minor/patch versions

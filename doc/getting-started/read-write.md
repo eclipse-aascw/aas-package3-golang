@@ -14,7 +14,13 @@ pkg, err := packaging.Create("/path/to/some/file.aasx")
 if err != nil {
     log.Fatal(err)
 }
-defer pkg.Close()
+defer pkg.Discard()
+
+// ... modify the package ...
+
+if err := pkg.Close(); err != nil {
+    log.Fatal(err)
+}
 ```
 
 You can also create a package in a stream (for example, to write to a buffer or network connection):
@@ -27,10 +33,17 @@ pkg, err := packaging.CreateInStream(stream)
 if err != nil {
     log.Fatal(err)
 }
-defer pkg.Close()
+defer pkg.Discard()
+
+// ... modify the package ...
+
+if err := pkg.Close(); err != nil {
+    log.Fatal(err)
+}
 ```
 
-Please do not forget to close the package when done, or use `defer`.
+Please do not forget to close the package when done.
+See [Closing and Flushing](#closing-and-flushing) for why we defer `Discard` rather than `Close`.
 
 ## Creating a Package with Bounded Memory
 
@@ -78,7 +91,13 @@ pkg, err := packaging.OpenReadWrite("/path/to/some/file.aasx")
 if err != nil {
     log.Fatal(err)
 }
-defer pkg.Close()
+defer pkg.Discard()
+
+// ... modify the package ...
+
+if err := pkg.Close(); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Putting Parts Together
@@ -231,11 +250,46 @@ if err != nil {
 }
 ```
 
-## Flushing
+## Closing and Flushing
 
-Flushing is necessary if you want to make sure that the changes you made to the package are persisted properly.
+The changes are kept in memory until they are flushed to the file or stream.
+The behavior follows how SQLite connections handle commits:
 
-To flush:
+* `Close` flushes the package if it has been modified since it was opened or last flushed, and then closes it.
+  If nothing has been modified, the file or stream is left untouched, i.e., it is neither rewritten nor is its modification time bumped.
+* `Discard` closes the package *without* flushing, so the unflushed changes are dropped.
+  It is a no-op if the package has already been closed.
+* `Flush` writes the package immediately, which is useful for saving in the middle of a session.
+
+We recommend to defer `Discard` and call `Close` explicitly at the end, analogous to `Rollback` and `Commit` of `sql.Tx`.
+This way, a half-modified package never reaches the disk when you return early with an error or panic:
+
+```go
+func addSpec(packaging *aasx.Packaging, path string, content []byte) error {
+    pkg, err := packaging.OpenReadWrite(path)
+    if err != nil {
+        return err
+    }
+    defer pkg.Discard()
+
+    uri, _ := url.Parse("/aasx/data.json")
+    part, err := pkg.PutPart(uri, "text/json", content)
+    if err != nil {
+        return err // nothing is written
+    }
+    if err := pkg.MakeSpec(part); err != nil {
+        return err // nothing is written, not even the part
+    }
+
+    return pkg.Close() // flushes and closes
+}
+```
+
+If the flush in `Close` fails, the package remains open and the error is returned, so that you can retry or `Discard`.
+
+Up to v2.1.0, `Close` did not flush. If you are upgrading code that defers `Close`, please see [Migrating from v2.1.0 and Earlier](installation.md#migrating-from-v210-and-earlier).
+
+To flush without closing:
 
 ```go
 err := pkg.Flush()
@@ -243,8 +297,6 @@ if err != nil {
     log.Fatal(err)
 }
 ```
-
-This writes all pending changes to the file or stream.
 
 ## Concurrency
 

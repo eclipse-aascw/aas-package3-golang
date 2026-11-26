@@ -132,7 +132,15 @@ func (p *PackageReadWrite) UnrelateSupplementaryFromSpec(supplementary *Part, sp
 func (p *PackageReadWrite) SetThumbnail(part *Part) error
 func (p *PackageReadWrite) UnsetThumbnail() error
 func (p *PackageReadWrite) Flush() error
+func (p *PackageReadWrite) Close() error
+func (p *PackageReadWrite) Discard() error
 ```
+
+`Close` flushes the package if it has been modified since it was opened or last
+flushed, and then closes it. An unmodified package is left untouched. If the
+flush fails, the package stays open and the error is returned. `Discard` closes
+without flushing and is a no-op on an already closed package, so the idiom is
+`defer pkg.Discard()` followed by an explicit `pkg.Close()` at the end.
 
 ### Part
 
